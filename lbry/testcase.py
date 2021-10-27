@@ -240,6 +240,8 @@ class IntegrationTestCase(AsyncioTestCase):
         self.addCleanup(self.conductor.stop_wallet)
         await self.conductor.start_hub()
         self.addCleanup(self.conductor.stop_hub)
+        await self.conductor.start_lbcd_wallet()
+        self.addCleanup(self.conductor.stop_lbcd_wallet)
         self.blockchain = self.conductor.blockchain_node
         self.hub = self.conductor.hub_node
         self.wallet_node = self.conductor.wallet_node

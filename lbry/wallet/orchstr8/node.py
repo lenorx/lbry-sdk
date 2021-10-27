@@ -18,7 +18,7 @@ from uuid import uuid4
 import lbry
 from lbry.wallet.server.server import Server
 from lbry.wallet.server.env import Env
-from lbry.wallet import Wallet, Ledger, RegTestLedger, WalletManager, Account, BlockHeightEvent
+from lbry.wallet import Wallet, Ledger, RegTestLedger, WalletManager, Account, BlockHeightEvent, __wallet_daemon__
 from lbry.conf import KnownHubsList, Config
 from lbry.wallet.orchstr8 import __hub_url__
 
@@ -51,11 +51,13 @@ class Conductor:
             self.manager_module, RegTestLedger, default_seed=seed
         )
         self.hub_node = HubNode(__hub_url__, "hub", self.spv_node)
+        self.lbcd_wallet_node = LBCDWalletNode(__hub_url__, __wallet_daemon__)
 
         self.blockchain_started = False
         self.spv_started = False
         self.wallet_started = False
         self.hub_started = False
+        self.lbcd_wallet_started = False
 
         self.log = log.getChild('conductor')
 
@@ -103,16 +105,28 @@ class Conductor:
             await self.wallet_node.stop(cleanup=True)
             self.wallet_started = False
 
+    async def start_lbcd_wallet(self):
+        if not self.lbcd_wallet_started:
+            await self.lbcd_wallet_node.start()
+            self.lbcd_wallet_started = True
+
+    async def stop_lbcd_wallet(self):
+        if self.lbcd_wallet_started:
+            await self.lbcd_wallet_node.stop(cleanup=True)
+            self.lbcd_wallet_started = False
+
     async def start(self):
         await self.start_blockchain()
         await self.start_spv()
         await self.start_wallet()
+        await self.start_lbcd_wallet()
 
     async def stop(self):
         all_the_stops = [
             self.stop_wallet,
             self.stop_spv,
-            self.stop_blockchain
+            self.stop_blockchain,
+            self.stop_lbcd_wallet
         ]
         for stop in all_the_stops:
             try:
@@ -263,8 +277,28 @@ class BlockchainProcess(asyncio.SubprocessProtocol):
         if b'Error:' in data:
             self.ready.set()
             raise SystemError(data.decode())
-        if b'Done loading' in data:
+        if b'RPCS: RPC server listening on' in data:
             self.ready.set()
+
+    def process_exited(self):
+        self.stopped.set()
+        self.ready.set()
+
+
+class WalletProcess(asyncio.SubprocessProtocol):
+
+    IGNORE_OUTPUT = [
+    ]
+
+    def __init__(self):
+        self.ready = asyncio.Event()
+        self.stopped = asyncio.Event()
+        self.log = log.getChild('blockchain')
+        self.transport: Optional[asyncio.transports.SubprocessTransport] = None
+
+    def pipe_data_received(self, fd, data):
+        self.log.info(data.decode())
+        self.ready.set()
 
     def process_exited(self):
         self.stopped.set()
@@ -275,6 +309,10 @@ class BlockchainNode:
 
     P2SH_SEGWIT_ADDRESS = "p2sh-segwit"
     BECH32_ADDRESS = "bech32"
+
+    WALLET_COMMANDS = [
+        'sendtoaddress'
+    ]
 
     def __init__(self, url, daemon, cli):
         self.latest_release_url = url
@@ -290,6 +328,7 @@ class BlockchainNode:
         self.hostname = 'localhost'
         self.peerport = 9246 + 2  # avoid conflict with default peer port
         self.rpcport = 9245 + 2  # avoid conflict with default rpc port
+        self.wallet_rpcport = 9001
         self.rpcuser = 'rpcuser'
         self.rpcpassword = 'rpcpassword'
         self.stopped = False
@@ -349,6 +388,7 @@ class BlockchainNode:
         self.data_path = tempfile.mkdtemp()
         loop = asyncio.get_event_loop()
         asyncio.get_child_watcher().attach_loop(loop)
+
         command = [
             self.daemon_bin,
             '--notls', '--miningaddr', "mqgiasfou2Zdr2JorusNDrmsXfSg7hHaaY",
@@ -400,10 +440,12 @@ class BlockchainNode:
         shutil.rmtree(self.data_path, ignore_errors=True)
 
     async def _cli_cmnd(self, *args):
+        command = args[0]
+
         cmnd_args = [
             self.cli_bin,
             '--skipverify', '--notls',
-            f'--rpcuser={self.rpcuser}', f'--rpcpass={self.rpcpassword}', f'-s=:{self.rpcport}'
+            f'--rpcuser={self.rpcuser}', f'--rpcpass={self.rpcpassword}', f'-s=127.0.0.1:{self.wallet_rpcport}'
         ] + list(args)
         self.log.info(' '.join(cmnd_args))
         loop = asyncio.get_event_loop()
@@ -460,6 +502,77 @@ class BlockchainNode:
 
     def get_raw_transaction(self, txid):
         return self._cli_cmnd('getrawtransaction', txid, '1')
+
+
+class LBCDWalletNode:
+    def __init__(self, url, cli):
+        self.latest_release_url = url
+        self.project_dir = os.path.dirname(os.path.dirname(__file__))
+        self.bin_dir = os.path.join(self.project_dir, 'bin')
+        self.wallet_bin = os.path.join(self.bin_dir, 'lbcwallet')
+        self.cli_bin = os.path.join(self.bin_dir, cli)
+        self.log = log.getChild('blockchain')
+        self.protocol = None
+        self.transport = None
+        self.hostname = 'localhost'
+        self.peerport = 9246 + 2  # avoid conflict with default peer port
+        self.rpcport = 9245 + 2  # avoid conflict with default rpc port
+        self.wallet_rpcport = 9001
+        self.rpcuser = 'rpcuser'
+        self.rpcpassword = 'rpcpassword'
+        self.stopped = False
+        self.restart_ready = asyncio.Event()
+        self.restart_ready.set()
+        self.running = asyncio.Event()
+
+    @property
+    def rpc_url(self):
+        return f'http://{self.rpcuser}:{self.rpcpassword}@{self.hostname}:{self.rpcport}/'
+
+    async def start(self):
+        loop = asyncio.get_event_loop()
+        asyncio.get_child_watcher().attach_loop(loop)
+
+        command = [
+            self.wallet_bin,
+            f'-u {self.rpcuser}', f'-P {self.rpcpassword}',
+            f'--lbcdusername={self.rpcuser}', f'--lbcdpassword={self.rpcpassword}',
+            f'--rpclisten=127.0.0.1:{self.wallet_rpcport}', f'--rpcconnect=127.0.0.1:{self.rpcport}',
+            '--noservertls', '--noclienttls', '--simnet'
+        ]
+        self.log.info(' '.join(command))
+        while not self.stopped:
+            if self.running.is_set():
+                await asyncio.sleep(1)
+                continue
+            await self.restart_ready.wait()
+            try:
+                self.transport, self.protocol = await loop.subprocess_exec(
+                    WalletProcess, *command
+                )
+                self.protocol.transport = self.transport
+                await self.protocol.ready.wait()
+                assert not self.protocol.stopped.is_set()
+                self.running.set()
+            except asyncio.CancelledError:
+                self.running.clear()
+                raise
+            except Exception as e:
+                self.running.clear()
+                log.exception('failed to start lbrycrdd', exc_info=e)
+
+    def cleanup(self):
+        pass
+
+    async def stop(self, cleanup=True):
+        self.stopped = True
+        try:
+            self.transport.terminate()
+            await self.protocol.stopped.wait()
+            self.transport.close()
+        finally:
+            if cleanup:
+                self.cleanup()
 
 
 class HubProcess(asyncio.SubprocessProtocol):
