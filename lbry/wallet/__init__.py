@@ -1,5 +1,7 @@
-__node_daemon__ = 'lbrycrdd'
-__node_cli__ = 'lbrycrd-cli'
+# __node_daemon__ = 'lbrycrdd'
+__node_daemon__ = 'lbcd'
+# __node_cli__ = 'lbrycrd-cli'
+__node_cli__ = 'lbcctl'
 __node_bin__ = ''
 __node_url__ = (
     'https://github.com/lbryio/lbrycrd/releases/download/v0.17.4.6/lbrycrd-linux-1746.zip'

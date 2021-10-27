@@ -62,7 +62,8 @@ class Conductor:
     async def start_blockchain(self):
         if not self.blockchain_started:
             asyncio.create_task(self.blockchain_node.start())
-            await self.blockchain_node.running.wait()
+            # await self.blockchain_node.running.wait()
+            await asyncio.sleep(2)
             await self.blockchain_node.generate(200)
             self.blockchain_started = True
 
@@ -350,9 +351,10 @@ class BlockchainNode:
         asyncio.get_child_watcher().attach_loop(loop)
         command = [
             self.daemon_bin,
-            f'-datadir={self.data_path}', '-printtoconsole', '-regtest', '-server', '-txindex',
-            f'-rpcuser={self.rpcuser}', f'-rpcpassword={self.rpcpassword}', f'-rpcport={self.rpcport}',
-            f'-port={self.peerport}'
+            '--notls', '--miningaddr', "mqgiasfou2Zdr2JorusNDrmsXfSg7hHaaY",
+            '--regtest', '--txindex',
+            f'--rpcuser={self.rpcuser}', f'--rpcpass={self.rpcpassword}', f'--rpclisten=127.0.0.1:{self.rpcport}',
+            f'--listen=:{self.peerport}'
         ]
         self.log.info(' '.join(command))
         while not self.stopped:
@@ -399,8 +401,9 @@ class BlockchainNode:
 
     async def _cli_cmnd(self, *args):
         cmnd_args = [
-            self.cli_bin, f'-datadir={self.data_path}', '-regtest',
-            f'-rpcuser={self.rpcuser}', f'-rpcpassword={self.rpcpassword}', f'-rpcport={self.rpcport}'
+            self.cli_bin,
+            '--skipverify', '--notls',
+            f'--rpcuser={self.rpcuser}', f'--rpcpass={self.rpcpassword}', f'-s=:{self.rpcport}'
         ] + list(args)
         self.log.info(' '.join(cmnd_args))
         loop = asyncio.get_event_loop()
