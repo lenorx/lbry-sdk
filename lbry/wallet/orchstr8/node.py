@@ -107,7 +107,8 @@ class Conductor:
         if not self.lbcd_wallet_started:
             asyncio.create_task(self.lbcd_wallet_node.start())
             await self.lbcd_wallet_node.running.wait()
-            await self.blockchain_node.generate(200)
+            await self.blockchain_node.generate(10)
+            await self.blockchain_node.wallet_passphrase("lbry", 3600)
             self.lbcd_wallet_started = True
 
     async def stop_lbcd_wallet(self):
@@ -470,6 +471,9 @@ class BlockchainNode:
     def generate(self, blocks):
         self.block_expected += blocks
         return self._cli_cmnd('generate', str(blocks))
+
+    def wallet_passphrase(self, passphrase, timeout):
+                return self._cli_cmnd('walletpassphrase', passphrase, str(timeout))
 
     def invalidate_block(self, blockhash):
         return self._cli_cmnd('invalidateblock', blockhash)
