@@ -64,9 +64,7 @@ class Conductor:
     async def start_blockchain(self):
         if not self.blockchain_started:
             asyncio.create_task(self.blockchain_node.start())
-            # await self.blockchain_node.running.wait()
-            await asyncio.sleep(2)
-            await self.blockchain_node.generate(200)
+            await self.blockchain_node.running.wait()
             self.blockchain_started = True
 
     async def stop_blockchain(self):
@@ -107,7 +105,9 @@ class Conductor:
 
     async def start_lbcd_wallet(self):
         if not self.lbcd_wallet_started:
-            await self.lbcd_wallet_node.start()
+            asyncio.create_task(self.lbcd_wallet_node.start())
+            await self.lbcd_wallet_node.running.wait()
+            await self.blockchain_node.generate(200)
             self.lbcd_wallet_started = True
 
     async def stop_lbcd_wallet(self):
@@ -117,16 +117,16 @@ class Conductor:
 
     async def start(self):
         await self.start_blockchain()
+        await self.start_lbcd_wallet()
         await self.start_spv()
         await self.start_wallet()
-        await self.start_lbcd_wallet()
 
     async def stop(self):
         all_the_stops = [
             self.stop_wallet,
             self.stop_spv,
-            self.stop_blockchain,
-            self.stop_lbcd_wallet
+            self.stop_lbcd_wallet,
+            self.stop_blockchain
         ]
         for stop in all_the_stops:
             try:
@@ -297,8 +297,16 @@ class WalletProcess(asyncio.SubprocessProtocol):
         self.transport: Optional[asyncio.transports.SubprocessTransport] = None
 
     def pipe_data_received(self, fd, data):
-        self.log.info(data.decode())
-        self.ready.set()
+        if self.log and not any(ignore in data for ignore in self.IGNORE_OUTPUT):
+            if b'Error:' in data:
+                self.log.error(data.decode())
+            else:
+                self.log.info(data.decode())
+        if b'Error:' in data:
+            self.ready.set()
+            raise SystemError(data.decode())
+        if b'WLLT: Finished rescan' in data:
+            self.ready.set()
 
     def process_exited(self):
         self.stopped.set()
@@ -391,7 +399,8 @@ class BlockchainNode:
 
         command = [
             self.daemon_bin,
-            '--notls', '--miningaddr', "mqgiasfou2Zdr2JorusNDrmsXfSg7hHaaY",
+            # seed for the mining address ae3e130c701f89fea0a69ba9fe6615e4cc3ad2ec4432855f77ebfe8e91a67c37
+            '--notls', '--miningaddr', "n3iK4vKMJy6R8vNsTpsdah54TaYLy81U6i",
             '--regtest', '--txindex',
             f'--rpcuser={self.rpcuser}', f'--rpcpass={self.rpcpassword}', f'--rpclisten=127.0.0.1:{self.rpcport}',
             f'--listen=:{self.peerport}'
@@ -440,8 +449,6 @@ class BlockchainNode:
         shutil.rmtree(self.data_path, ignore_errors=True)
 
     async def _cli_cmnd(self, *args):
-        command = args[0]
-
         cmnd_args = [
             self.cli_bin,
             '--skipverify', '--notls',
@@ -535,8 +542,7 @@ class LBCDWalletNode:
 
         command = [
             self.wallet_bin,
-            f'-u {self.rpcuser}', f'-P {self.rpcpassword}',
-            f'--lbcdusername={self.rpcuser}', f'--lbcdpassword={self.rpcpassword}',
+            f'--username={self.rpcuser}', f'--password={self.rpcpassword}',
             f'--rpclisten=127.0.0.1:{self.wallet_rpcport}', f'--rpcconnect=127.0.0.1:{self.rpcport}',
             '--noservertls', '--noclienttls', '--simnet'
         ]
@@ -559,7 +565,7 @@ class LBCDWalletNode:
                 raise
             except Exception as e:
                 self.running.clear()
-                log.exception('failed to start lbrycrdd', exc_info=e)
+                log.exception('failed to start lbcwallet', exc_info=e)
 
     def cleanup(self):
         pass

@@ -1,6 +1,4 @@
-# __node_daemon__ = 'lbrycrdd'
 __node_daemon__ = 'lbcd'
-# __node_cli__ = 'lbrycrd-cli'
 __node_cli__ = 'lbcctl'
 __wallet_daemon__ = 'lbcwallet'
 __node_bin__ = ''
